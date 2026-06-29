@@ -1,0 +1,13 @@
+Agentic RAG Product Overview
+============================
+
+Our platform provides document ingestion, semantic search, and an adaptive agent that decides when to retrieve context before answering.
+
+Key capabilities:
+- Ingest PDF, Markdown, and plain text files
+- Chunk and embed documents into a FAISS vector index
+- Route questions to direct answers or retrieval
+- Grade retrieved chunks for relevance
+- Rewrite queries when initial retrieval is insufficient
+
+The agent uses LangGraph to orchestrate multi-step reasoning instead of a single retrieve-then-generate pass.
