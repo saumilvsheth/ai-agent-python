@@ -1,5 +1,13 @@
+"""
+LLM prompt templates for each step of the agentic RAG workflow.
+
+Each prompt is a ChatPromptTemplate with system + human messages.
+Variables in {braces} are filled in by the graph nodes at runtime.
+"""
+
 from langchain_core.prompts import ChatPromptTemplate
 
+# Decides whether to search the index or answer without retrieval.
 ROUTE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -14,6 +22,7 @@ ROUTE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Produces a better semantic search query after a failed retrieval attempt.
 REWRITE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -29,6 +38,7 @@ REWRITE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Scores one retrieved chunk as relevant (yes) or not (no) to the question.
 GRADE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -44,6 +54,7 @@ GRADE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Grounded answer generation using only the filtered context chunks.
 GENERATE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -59,6 +70,7 @@ GENERATE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Used when routing chose "direct" — no document context needed.
 DIRECT_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -69,6 +81,7 @@ DIRECT_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Explains why retrieved docs were useless; feeds into REWRITE_PROMPT.
 NOT_RELEVANT_PROMPT = ChatPromptTemplate.from_messages(
     [
         (

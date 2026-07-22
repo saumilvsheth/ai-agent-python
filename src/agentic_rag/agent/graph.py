@@ -1,3 +1,12 @@
+"""
+LangGraph workflow definition for the agentic RAG pipeline.
+
+Builds a state machine with six nodes:
+  route_question → (retrieve | answer_direct)
+  retrieve → grade_documents → (generate | rewrite_query → retrieve)
+  generate / answer_direct → END
+"""
+
 from typing import Literal
 
 from langchain_core.documents import Document
@@ -19,16 +28,24 @@ from agentic_rag.agent.state import AgentState, GradeDocuments
 from agentic_rag.config import settings
 from agentic_rag.retrieval.vector_store import VectorStore
 
+# Prevent infinite rewrite loops when retrieval keeps failing.
 MAX_REWRITES = 2
 
 
 class RouteDecision(BaseModel):
+    """
+    Structured output for the routing node.
+
+    Forces the LLM to return either "retrieve" or "direct" as JSON.
+    """
+
     route: Literal["retrieve", "direct"] = Field(
         description="Whether to retrieve from the document index or answer directly."
     )
 
 
 def _llm() -> ChatOpenAI:
+    """Shared chat model instance; temperature=0 for deterministic routing/grading."""
     return ChatOpenAI(
         model=settings.openai_model,
         api_key=settings.require_api_key(),
@@ -37,19 +54,40 @@ def _llm() -> ChatOpenAI:
 
 
 def build_graph() -> CompiledStateGraph:
+    """
+    Construct and compile the full agent graph.
+
+    Returns a runnable graph that accepts AgentState and produces updated state
+    with generation, documents, route metadata, etc.
+    """
     llm = _llm()
     vector_store = VectorStore()
 
     def route_question(state: AgentState) -> dict:
+        """
+        Node 1: Decide if the question needs document retrieval.
+
+        Uses structured output so the model must pick retrieve or direct.
+        """
         structured = llm.with_structured_output(RouteDecision)
         decision = structured.invoke(ROUTE_PROMPT.invoke({"question": state["question"]}))
         return {"route": decision.route}
 
     def retrieve(state: AgentState) -> dict:
+        """
+        Node 2: Semantic search over the FAISS index.
+
+        Uses the current question (original or rewritten) as the query.
+        """
         docs = vector_store.as_retriever().invoke(state["question"])
         return {"documents": docs}
 
     def grade_documents(state: AgentState) -> dict:
+        """
+        Node 3: Filter retrieved chunks by relevance.
+
+        Each chunk is scored yes/no; only "yes" chunks proceed to generation.
+        """
         grader = llm.with_structured_output(GradeDocuments)
         filtered: list[Document] = []
         for doc in state["documents"]:
@@ -66,6 +104,12 @@ def build_graph() -> CompiledStateGraph:
         return {"documents": filtered}
 
     def generate(state: AgentState) -> dict:
+        """
+        Node 4: Produce a grounded answer from graded context.
+
+        Even with no relevant docs (after max rewrites), still runs so the
+        user gets an explicit "insufficient information" response.
+        """
         context = _format_context(state["documents"])
         response = llm.invoke(
             GENERATE_PROMPT.invoke(
@@ -78,6 +122,11 @@ def build_graph() -> CompiledStateGraph:
         }
 
     def answer_direct(state: AgentState) -> dict:
+        """
+        Alternate exit path: answer without touching the vector store.
+
+        Used for greetings and general knowledge the router flagged as direct.
+        """
         response = llm.invoke(DIRECT_PROMPT.invoke({"question": state["question"]}))
         return {
             "generation": response.content,
@@ -85,6 +134,12 @@ def build_graph() -> CompiledStateGraph:
         }
 
     def rewrite_query(state: AgentState) -> dict:
+        """
+        Node 5: Improve the search query when grading filtered everything out.
+
+        Two-step: explain failure, then rewrite. Clears documents and bumps
+        rewrite_count before looping back to retrieve.
+        """
         reason = llm.invoke(
             NOT_RELEVANT_PROMPT.invoke(
                 {
@@ -105,14 +160,24 @@ def build_graph() -> CompiledStateGraph:
         }
 
     def decide_after_route(state: AgentState) -> str:
+        """Conditional edge: follow the route chosen by route_question."""
         return state["route"] or "retrieve"
 
     def decide_after_grade(state: AgentState) -> str:
+        """
+        Conditional edge after grading.
+
+        - Relevant docs found → generate
+        - No docs but rewrites exhausted → generate anyway (best-effort)
+        - Otherwise → rewrite and retry retrieval
+        """
         if state["documents"]:
             return "generate"
         if state.get("rewrite_count", 0) >= MAX_REWRITES:
             return "generate"
         return "rewrite"
+
+    # --- Wire nodes and edges into the LangGraph state machine ---
 
     graph = StateGraph(AgentState)
     graph.add_node("route_question", route_question)
@@ -142,6 +207,11 @@ def build_graph() -> CompiledStateGraph:
 
 
 def _format_context(documents: list[Document]) -> str:
+    """
+    Turn a list of Document chunks into a single prompt-ready context string.
+
+    Each chunk is numbered and tagged with its source file path from metadata.
+    """
     if not documents:
         return "No relevant documents found."
     parts: list[str] = []
